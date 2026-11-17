@@ -15,7 +15,6 @@ TensorFlow will automatically detect and use the GPU if the underlying hardware 
 ## ⭐ Features
 
 - Uses the [Falconsai/nsfw-image-detection](https://huggingface.co/Falconsai/nsfw_image_detection) AI model
-- Caches results based on SHA-256 hash of image data
 
 
 ## 🐳 Quick Start using Docker

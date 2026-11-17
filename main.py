@@ -1,16 +1,16 @@
 """Module providing an API for NSFW image detection."""
 
 import io
-import hashlib
 import logging
+from pathlib import Path
 import aiohttp
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from transformers import pipeline
 from transformers.pipelines import PipelineException
 from PIL import Image
-from cachetools import Cache
-import tensorflow as tf
+import torch
 from models import (
     FileImageDetectionResponse,
     UrlImageDetectionResponse,
@@ -19,24 +19,33 @@ from models import (
 
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["null"],  # Standalone HTML opened from the filesystem.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_methods=["POST"],
+    allow_headers=["Content-Type"],
+)
+
+
+@app.get("/", include_in_schema=False)
+async def upload_page():
+    """Serve the local image checker."""
+    return FileResponse(Path(__file__).with_name("check.html"))
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Initialize Cache with no TTL
-cache = Cache(maxsize=1000)
-
 # Load the model using the transformers pipeline
-model = pipeline("image-classification", model="falconsai/nsfw_image_detection")
+model = pipeline(
+    "image-classification",
+    model="Falconsai/nsfw_image_detection",
+    device=0 if torch.cuda.is_available() else -1,
+)
 
-# Detect the device used by TensorFlow
-DEVICE = "GPU" if tf.config.list_physical_devices("GPU") else "CPU"
-logging.info("TensorFlow version: %s", tf.__version__)
-logging.info("Model is using: %s", DEVICE)
-
-if DEVICE == "GPU":
-    logging.info("GPUs available: %d", len(tf.config.list_physical_devices("GPU")))
+logging.info("PyTorch version: %s", torch.__version__)
+logging.info("Model is using: %s", model.device)
 
 
 async def download_image(image_url: str) -> bytes:
@@ -48,11 +57,6 @@ async def download_image(image_url: str) -> bytes:
                     status_code=response.status, detail="Image could not be retrieved."
                 )
             return await response.read()
-
-
-def hash_data(data):
-    """Function for hashing image data."""
-    return hashlib.sha256(data).hexdigest()
 
 
 @app.post("/v1/detect", response_model=FileImageDetectionResponse)
@@ -69,17 +73,6 @@ async def classify_image(file: UploadFile = File(None)):
 
         # Read the image file
         image_data = await file.read()
-        image_hash = hash_data(image_data)
-
-        if image_hash in cache:
-            # Return cached entry
-            logging.info("Returning cached entry for %s", file.filename)
-
-            cached_response = cache[image_hash]
-            response_data = {**cached_response, "file_name": file.filename}
-
-            return FileImageDetectionResponse(**response_data)
-
         image = Image.open(io.BytesIO(image_data))
 
         # Use the model to classify the image
@@ -96,9 +89,6 @@ async def classify_image(file: UploadFile = File(None)):
             "is_nsfw": best_prediction["label"] == "nsfw",
             "confidence_percentage": confidence_percentage,
         }
-
-        # Populate hash
-        cache[image_hash] = response_data.copy()
 
         # Add file_name to the API response
         response_data["file_name"] = file.filename
@@ -121,18 +111,6 @@ async def classify_images(request: ImageUrlsRequest):
         try:
             logging.info("Downloading image from URL: %s", image_url)
             image_data = await download_image(image_url)
-            image_hash = hash_data(image_data)
-
-            if image_hash in cache:
-                # Return cached entry
-                logging.info("Returning cached entry for %s", image_url)
-
-                cached_response = cache[image_hash]
-                response = {**cached_response, "url": image_url}
-
-                response_data.append(response)
-                continue
-
             image = Image.open(io.BytesIO(image_data))
 
             # Use the model to classify the image
@@ -149,9 +127,6 @@ async def classify_images(request: ImageUrlsRequest):
                 "is_nsfw": best_prediction["label"] == "nsfw",
                 "confidence_percentage": confidence_percentage,
             }
-
-            # Populate hash
-            cache[image_hash] = detection_result.copy()
 
             # Add url to the API response
             detection_result["url"] = image_url

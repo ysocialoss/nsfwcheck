@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image safety checker</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 48px 20px; background: #f1f5f9; color: #172033; font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 560px; margin: auto; padding: 32px; background: white; border: 1px solid #dbe3ee; border-radius: 20px; box-shadow: 0 12px 40px #1720330a; }
+    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.7px; }
+    p { color: #526079; }
+    label { display: block; font-weight: 600; margin-bottom: 10px; }
+    input { width: 100%; padding: 16px; border: 1px dashed #94a3b8; border-radius: 10px; }
+    img { display: block; max-width: 100%; max-height: 300px; margin: 20px auto; border-radius: 10px; object-fit: contain; }
+    [hidden] { display: none !important; }
+    button { width: 100%; margin-top: 20px; padding: 13px; border: 0; border-radius: 10px; background: #245ee8; color: white; font: inherit; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: default; }
+    #result { margin-top: 20px; padding: 16px; border-radius: 10px; background: #edf2f8; white-space: pre-line; overflow-wrap: anywhere; }
+    #result[data-kind="safe"] { background: #e7f6ed; color: #14532d; }
+    #result[data-kind="nsfw"], #result[data-kind="error"] { background: #fff0ed; color: #9a3412; }
+    small { display: block; margin-top: 20px; color: #64748b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Image safety checker</h1>
+    <p>Upload an image to check for NSFW content using your local API.</p>
+    <form id="upload-form">
+      <label for="image">Choose an image</label>
+      <input id="image" name="file" type="file" accept="image/*" required>
+      <img id="preview" alt="Selected image preview" hidden>
+      <button id="check" type="submit" disabled>Check image</button>
+    </form>
+    <div id="result" role="status" aria-live="polite" hidden></div>
+    <small>API: http://127.0.0.1:8000/v1/detect</small>
+  </main>
+  <script>
+    const form = document.querySelector('#upload-form');
+    const input = document.querySelector('#image');
+    const preview = document.querySelector('#preview');
+    const button = document.querySelector('#check');
+    const result = document.querySelector('#result');
+    let previewUrl;
+
+    function showResult(message, kind = '') {
+      result.hidden = false;
+      result.dataset.kind = kind;
+      result.textContent = message;
+    }
+
+    input.addEventListener('change', () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      preview.hidden = true;
+      preview.removeAttribute('src');
+      result.hidden = true;
+      const file = input.files[0];
+      button.disabled = !file;
+      if (!file) return;
+      if (file.type && !file.type.startsWith('image/')) {
+        button.disabled = true;
+        showResult('Please choose an image file.', 'error');
+        return;
+      }
+      previewUrl = URL.createObjectURL(file);
+      preview.src = previewUrl;
+      preview.hidden = false;
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const file = input.files[0];
+      if (!file) return;
+      button.disabled = true;
+      input.disabled = true;
+      button.textContent = 'Checking…';
+      showResult('Analyzing image…');
+      const data = new FormData();
+      data.append('file', file);
+      try {
+        const response = await fetch('http://127.0.0.1:8000/v1/detect', {
+          method: 'POST',
+          body: data,
+          signal: AbortSignal.timeout(120000)
+        });
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          throw new Error(typeof error.detail === 'string' ? error.detail : `API returned HTTP ${response.status}.`);
+        }
+        const prediction = await response.json();
+        if (typeof prediction.is_nsfw !== 'boolean' || typeof prediction.confidence_percentage !== 'number') {
+          throw new Error('The API returned an unexpected response.');
+        }
+        showResult(
+          `${prediction.is_nsfw ? 'NSFW content detected' : 'Classified as normal'}\nConfidence: ${prediction.confidence_percentage.toFixed(1)}%`,
+          prediction.is_nsfw ? 'nsfw' : 'safe'
+        );
+      } catch (error) {
+        showResult(error.name === 'TimeoutError'
+          ? 'The check timed out. Please try again.'
+          : error instanceof TypeError
+            ? 'Could not reach the API. Start the server at 127.0.0.1:8000 and reload this page.'
+            : error.message, 'error');
+      } finally {
+        input.disabled = false;
+        button.disabled = !input.files.length;
+        button.textContent = 'Check image';
+      }
+    });
+  </script>
+</body>
+</html>
