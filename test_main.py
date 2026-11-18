@@ -1,6 +1,6 @@
 """API Tests"""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from main import app
 
@@ -32,7 +32,6 @@ def test_invalid_input():
 
 def test_repeated_requests_run_inference():
     """Both endpoints classify identical images on every request."""
-    from unittest.mock import AsyncMock
     with open(FILE_NAME, "rb") as image:
         data = image.read()
     with patch("main.model", return_value=[{"label": "normal", "score": 1.0}]) as model:
@@ -41,7 +40,10 @@ def test_repeated_requests_run_inference():
             assert response.status_code == 200
         assert model.call_count == 2
         with patch("main.download_image", new_callable=AsyncMock, return_value=data) as download:
-            response = client.post("/v1/detect/urls", json={"urls": ["https://example.com/image.jpg"] * 2})
+            response = client.post(
+                "/v1/detect/urls",
+                json={"urls": ["https://example.com/image.jpg"] * 2},
+            )
             assert response.status_code == 200
             assert len(response.json()) == 2
             assert download.call_count == 2
